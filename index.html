@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Orb Rush - Free Browser Game</title>
+<meta name="description" content="Orb Rush is a free browser game. Eat glowing dots, swallow smaller orbs, dodge bigger ones and climb the leaderboard. No download needed.">
+<meta property="og:title" content="Orb Rush - Free Browser Game">
+<meta property="og:description" content="Eat glowing dots, outgrow rival orbs and climb the leaderboard. Play free in your browser.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0b1118">
+<style>
+html,body{margin:0;height:100%;background:#0b1118;overflow:hidden;color:#e8eef5;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+canvas{display:block;width:100vw;height:100vh;touch-action:none}
+.hide{display:none!important}
+.ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(8,13,19,.6);padding:16px}
+.box{background:#17222e;border:1px solid #2a3b4d;border-radius:16px;padding:24px 26px;max-width:380px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.box h1{margin:0 0 6px;font-size:34px;letter-spacing:.5px}
+.box h1 b{color:#2ee6a6}
+.box h2{margin:0 0 8px;font-size:26px}
+.box p{margin:8px 0;color:#9fb2c6;font-size:14.5px;line-height:1.5}
+.box input{width:100%;box-sizing:border-box;margin:12px 0 8px;padding:12px 14px;border-radius:10px;border:1px solid #2a3b4d;background:#0f1720;color:#e8eef5;font:inherit;font-size:16px;text-align:center}
+.box input:focus{outline:2px solid #2ee6a6;border-color:transparent}
+.btn{width:100%;padding:12px;border:0;border-radius:10px;background:#2ee6a6;color:#06241a;font:inherit;font-size:17px;font-weight:800;cursor:pointer}
+.btn:hover{filter:brightness(1.08)}
+.stat{display:flex;justify-content:space-around;margin:14px 0}
+.stat div{font-size:13px;color:#9fb2c6}
+.stat b{display:block;font-size:24px;color:#ffb347}
+.hint{font-size:12.5px!important}
+#hud{position:fixed;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;pointer-events:none}
+#score{background:rgba(23,34,46,.85);border:1px solid #2a3b4d;border-radius:10px;padding:8px 14px;font-weight:700;align-self:flex-start}
+#lb{background:rgba(23,34,46,.85);border:1px solid #2a3b4d;border-radius:10px;padding:8px 12px;min-width:150px;font-size:13px}
+#lb h3{margin:0 0 4px;font-size:13px;color:#2ee6a6}
+#lb div{display:flex;justify-content:space-between;gap:10px;padding:1px 0}
+#lb .me{color:#ffb347;font-weight:700}
+#boost{position:fixed;right:18px;bottom:22px;width:72px;height:72px;border-radius:50%;border:0;background:#ffb347;color:#3a2200;font-size:30px;display:none;touch-action:none}
+@media (pointer:coarse){#boost{display:block}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="hud" class="hide">
+  <div id="score">Mass 10</div>
+  <div id="lb"></div>
+</div>
+<button id="boost" class="hide" aria-label="Boost">⚡</button>
+
+<div id="menu" class="ov">
+  <div class="box">
+    <h1>Orb<b>Rush</b></h1>
+    <p>Eat glowing dots to grow. Swallow smaller orbs. Run from bigger ones. Be the biggest orb on the leaderboard.</p>
+    <input id="nick" maxlength="12" placeholder="Your nickname" autocomplete="off">
+    <button class="btn" id="play">Play</button>
+    <p class="hint">Move: mouse or touch drag &middot; Boost: Space or the ⚡ button (costs mass)</p>
+    <p class="hint" id="best"></p>
+    <noscript><p>Orb Rush needs JavaScript to run. Please enable it in your browser.</p></noscript>
+  </div>
+</div>
+
+<div id="over" class="ov hide">
+  <div class="box">
+    <h2>You were eaten!</h2>
+    <div class="stat">
+      <div><b id="o-mass">0</b>Final mass</div>
+      <div><b id="o-eaten">0</b>Orbs eaten</div>
+      <div><b id="o-best">0</b>Best</div>
+    </div>
+    <button class="btn" id="again">Play again</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var cv = document.getElementById('c');
+  var ctx = cv.getContext('2d');
+  var $ = function (id) { return document.getElementById(id); };
+
+  var W = 3000, H = 3000, N_PELLETS = 1200, N_BOTS = 16;
+  var COLORS = ['#2ee6a6', '#ffb347', '#ff6b6b', '#6bb5ff', '#c792ea', '#f6e05e', '#4fd1c5', '#f687b3'];
+  var NAMES = ['Nova', 'Pixel', 'Zed', 'Mochi', 'Blip', 'Comet', 'Rogue', 'Echo', 'Taro', 'Juno',
+               'Kiwi', 'Atlas', 'Neo', 'Pogo', 'Rex', 'Sol', 'Vex', 'Yuki', 'Orbit', 'Bolt'];
+
+  var vw = 0, vh = 0, dpr = 1;
+  var state = 'menu';            // menu | play | over
+  var player = null, bots = [], pellets = [];
+  var mouse = { x: 0, y: 0 }, boosting = false;
+  var cam = { x: W / 2, y: H / 2, s: 1 };
+  var last = 0, lbTimer = 0, eaten = 0, best = 0;
+
+  try { best = +localStorage.getItem('orbrush_best') || 0; } catch (e) {}
+  try { $('nick').value = localStorage.getItem('orbrush_name') || ''; } catch (e) {}
+  $('best').textContent = best ? 'Your best mass: ' + best : '';
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    vw = window.innerWidth; vh = window.innerHeight;
+    cv.width = Math.floor(vw * dpr);
+    cv.height = Math.floor(vh * dpr);
+    mouse.x = vw / 2; mouse.y = vh / 2;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function rad(m) { return 4 * Math.sqrt(m) + 4; }
+  function speed(r) { return 340 / (1 + r * 0.012); }
+  function clampOrb(o) {
+    o.x = Math.max(0, Math.min(W, o.x));
+    o.y = Math.max(0, Math.min(H, o.y));
+  }
+
+  function makeBot() {
+    return { x: rnd(100, W - 100), y: rnd(100, H - 100), m: rnd(10, 30), color: pick(COLORS),
+             name: pick(NAMES), bot: true, dx: 1, dy: 0, think: 0, dead: false };
+  }
+  function relocate(p) { p.x = rnd(20, W - 20); p.y = rnd(20, H - 20); p.c = pick(COLORS); }
+
+  function initWorld() {
+    var i;
+    pellets = [];
+    for (i = 0; i < N_PELLETS; i++) { var p = {}; relocate(p); pellets.push(p); }
+    bots = [];
+    for (i = 0; i < N_BOTS; i++) bots.push(makeBot());
+  }
+
+  function allOrbs() { return player ? bots.concat([player]) : bots.slice(); }
+
+  function think(b, all) {
+    var r = rad(b.m), threat = null, td = 1e9, prey = null, pd = 1e9, i;
+    for (i = 0; i < all.length; i++) {
+      var o = all[i];
+      if (o === b || o.dead) continue;
+      var ro = rad(o.m), d = Math.hypot(o.x - b.x, o.y - b.y);
+      if (ro > r * 1.12 && d < r + ro + 350 && d < td) { td = d; threat = o; }
+      else if (r > ro * 1.12 && d < 500 && d < pd) { pd = d; prey = o; }
+    }
+    var tx, ty;
+    if (threat) { tx = b.x - (threat.x - b.x); ty = b.y - (threat.y - b.y); }
+    else if (prey) { tx = prey.x; ty = prey.y; }
+    else {
+      var bd = 400 * 400, bp = null;
+      for (i = 0; i < pellets.length; i++) {
+        var p = pellets[i], dx0 = p.x - b.x, dy0 = p.y - b.y, dd = dx0 * dx0 + dy0 * dy0;
+        if (dd < bd) { bd = dd; bp = p; }
+      }
+      if (bp) { tx = bp.x; ty = bp.y; }
+      else { tx = b.x + rnd(-300, 300); ty = b.y + rnd(-300, 300); }
+    }
+    var dx = tx - b.x, dy = ty - b.y, dist = Math.hypot(dx, dy) || 1;
+    b.dx = dx / dist; b.dy = dy / dist;
+    b.think = rnd(0.2, 0.5);
+  }
+
+  function eatPellets(o) {
+    var r = rad(o.m);
+    for (var i = 0; i < pellets.length; i++) {
+      var p = pellets[i], dx = p.x - o.x, dy = p.y - o.y;
+      if (dx * dx + dy * dy < r * r) { o.m += 1.5; relocate(p); }
+    }
+  }
+
+  function eatPass() {
+    var all = allOrbs(), i, j;
+    for (i = 0; i < all.length; i++) {
+      for (j = i + 1; j < all.length; j++) {
+        var a = all[i], b = all[j];
+        if (a.dead || b.dead) continue;
+        var ra = rad(a.m), rb = rad(b.m);
+        var big = a, small = b, rbig = ra, rsmall = rb;
+        if (rb > ra) { big = b; small = a; rbig = rb; rsmall = ra; }
+        if (rbig < rsmall * 1.12) continue;
+        var d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < rbig - rsmall * 0.4) {
+          big.m += small.m * 0.9;
+          small.dead = true;
+          if (big === player) eaten++;
+          if (small === player) gameOver();
+        }
+      }
+    }
+    for (i = 0; i < bots.length; i++) if (bots[i].dead) bots[i] = makeBot();
+  }
+
+  function update(dt) {
+    var i, all = allOrbs();
+    if (player && state === 'play') {
+      var dx = mouse.x - vw / 2, dy = mouse.y - vh / 2, d = Math.hypot(dx, dy);
+      var sp = speed(rad(player.m));
+      var boost = boosting && player.m > 12;
+      if (d > 3) {
+        var s = sp * Math.min(1, d / 60) * (boost ? 1.7 : 1);
+        player.x += dx / d * s * dt;
+        player.y += dy / d * s * dt;
+      }
+      if (boost) player.m = Math.max(10, player.m - player.m * 0.05 * dt);
+      clampOrb(player);
+      eatPellets(player);
+    }
+    for (i = 0; i < bots.length; i++) {
+      var b = bots[i];
+      b.think -= dt;
+      if (b.think <= 0) think(b, all);
+      var sb = speed(rad(b.m)) * 0.92;
+      b.x += b.dx * sb * dt;
+      b.y += b.dy * sb * dt;
+      clampOrb(b);
+      eatPellets(b);
+    }
+    var list = allOrbs();
+    for (i = 0; i < list.length; i++) if (list[i].m > 40) list[i].m -= list[i].m * 0.004 * dt;
+    eatPass();
+
+    lbTimer -= dt;
+    if (lbTimer <= 0) { lbTimer = 0.5; updateHud(); }
+  }
+
+  function updateHud() {
+    if (player) $('score').textContent = 'Mass ' + Math.floor(player.m);
+    var list = allOrbs().sort(function (a, b) { return b.m - a.m; }).slice(0, 5);
+    var box = $('lb');
+    box.textContent = '';
+    var h = document.createElement('h3');
+    h.textContent = 'Leaderboard';
+    box.appendChild(h);
+    list.forEach(function (o) {
+      var row = document.createElement('div');
+      if (o === player) row.className = 'me';
+      var n = document.createElement('span'); n.textContent = o.name;
+      var v = document.createElement('span'); v.textContent = Math.floor(o.m);
+      row.appendChild(n); row.appendChild(v);
+      box.appendChild(row);
+    });
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#0b1118';
+    ctx.fillRect(0, 0, vw, vh);
+
+    var f = player || bots[0];
+    var ts = Math.max(0.35, 1.1 - Math.min(0.75, rad(f.m) / 400));
+    cam.s += (ts - cam.s) * 0.06;
+    cam.x += (f.x - cam.x) * 0.15;
+    cam.y += (f.y - cam.y) * 0.15;
+
+    ctx.translate(vw / 2, vh / 2);
+    ctx.scale(cam.s, cam.s);
+    ctx.translate(-cam.x, -cam.y);
+
+    var left = cam.x - vw / 2 / cam.s, right = cam.x + vw / 2 / cam.s;
+    var top = cam.y - vh / 2 / cam.s, bottom = cam.y + vh / 2 / cam.s;
+    var x, y, i;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1.5 / cam.s;
+    ctx.beginPath();
+    for (x = Math.max(0, Math.floor(left / 100) * 100); x <= Math.min(W, right); x += 100) { ctx.moveTo(x, Math.max(0, top)); ctx.lineTo(x, Math.min(H, bottom)); }
+    for (y = Math.max(0, Math.floor(top / 100) * 100); y <= Math.min(H, bottom); y += 100) { ctx.moveTo(Math.max(0, left), y); ctx.lineTo(Math.min(W, right), y); }
+    ctx.stroke();
+
+    ctx.strokeStyle = '#ff6b6b';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(0, 0, W, H);
+
+    for (i = 0; i < pellets.length; i++) {
+      var p = pellets[i];
+      if (p.x < left - 10 || p.x > right + 10 || p.y < top - 10 || p.y > bottom + 10) continue;
+      ctx.fillStyle = p.c;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, 6.2832); ctx.fill();
+    }
+
+    var all = allOrbs().sort(function (a, b) { return a.m - b.m; });
+    for (i = 0; i < all.length; i++) {
+      var o = all[i], r = rad(o.m);
+      if (o.x + r < left || o.x - r > right || o.y + r < top || o.y - r > bottom) continue;
+      ctx.shadowColor = o.color; ctx.shadowBlur = 24;
+      ctx.fillStyle = o.color;
+      ctx.beginPath(); ctx.arc(o.x, o.y, r, 0, 6.2832); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineWidth = Math.max(2, r * 0.08);
+      ctx.strokeStyle = o === player ? '#ffffff' : 'rgba(255,255,255,0.35)';
+      ctx.stroke();
+      if (r > 16) {
+        ctx.fillStyle = '#0b1118';
+        ctx.font = '700 ' + Math.max(11, r * 0.4) + 'px system-ui, sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(o.name, o.x, o.y);
+      }
+    }
+  }
+
+  function frame(ts) {
+    var dt = Math.min(0.05, (ts - last) / 1000 || 0);
+    last = ts;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function start() {
+    var nm = ($('nick').value || '').trim().slice(0, 12) || 'Player';
+    try { localStorage.setItem('orbrush_name', nm); } catch (e) {}
+    player = { x: rnd(W * 0.3, W * 0.7), y: rnd(H * 0.3, H * 0.7), m: 10, color: '#2ee6a6',
+               name: nm, bot: false, dx: 0, dy: 0, dead: false };
+    eaten = 0;
+    state = 'play';
+    $('menu').classList.add('hide');
+    $('over').classList.add('hide');
+    $('hud').classList.remove('hide');
+    $('boost').classList.remove('hide');
+    $('nick').blur();
+    mouse.x = vw / 2; mouse.y = vh / 2;
+    lbTimer = 0;
+  }
+
+  function gameOver() {
+    var finalMass = Math.floor(player.m);
+    if (finalMass > best) {
+      best = finalMass;
+      try { localStorage.setItem('orbrush_best', String(best)); } catch (e) {}
+    }
+    $('o-mass').textContent = finalMass;
+    $('o-eaten').textContent = eaten;
+    $('o-best').textContent = best;
+    $('best').textContent = 'Your best mass: ' + best;
+    player = null;
+    state = 'over';
+    boosting = false;
+    $('hud').classList.add('hide');
+    $('boost').classList.add('hide');
+    $('over').classList.remove('hide');
+  }
+
+  cv.addEventListener('pointermove', function (e) { mouse.x = e.clientX; mouse.y = e.clientY; });
+  cv.addEventListener('pointerdown', function (e) { mouse.x = e.clientX; mouse.y = e.clientY; });
+  window.addEventListener('keydown', function (e) {
+    if (state === 'play' && e.code === 'Space') { boosting = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', function (e) { if (e.code === 'Space') boosting = false; });
+  var bb = $('boost');
+  bb.addEventListener('pointerdown', function (e) { boosting = true; e.preventDefault(); });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) {
+    bb.addEventListener(ev, function () { boosting = false; });
+  });
+  $('play').addEventListener('click', start);
+  $('again').addEventListener('click', start);
+  $('nick').addEventListener('keydown', function (e) { if (e.key === 'Enter') start(); });
+
+  initWorld();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
